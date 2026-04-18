@@ -8,9 +8,15 @@ pub enum ProcessorError {
     #[error("Missing or invalid configuration: {0}")]
     ConfigError(#[from] std::env::VarError),
 
+    // AzureClient Errors
     #[error("Storage error: {0}")]
     StorageError(String),
 
+    // Azure Blob Errors
+    #[error("Blob error: {0}")]
+    BlobError(String),
+
+    // Azure Queue Errors
     #[error("Queue error: {0}")]
     QueueError(String),
 
