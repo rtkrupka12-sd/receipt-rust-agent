@@ -1,6 +1,7 @@
 // makes processor module public and accessible from main.rs
 pub mod azure_queue;
 pub mod azure_container;
+pub mod ocr;
 
 use crate::config::AzureConfig;
 use crate::error::ProcessorError;

@@ -6,25 +6,32 @@ use config::AzureConfig;
 use processor::AzureClient;
 use processor::azure_queue::{QueueManager, QueueMessage};
 use processor::azure_container::BlobManager;
-use std::collections::HashMap;
+use processor::ocr::OcrEngine;
+use processor::ocr::doc_intel::DocIntelClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load configuration and initialize client
+    // Load configuration
     let config = AzureConfig::from_env()?;
-    let client = AzureClient::new(config);
+
+    let storage_client = AzureClient::new(config.clone());
+    let ocr_client = DocIntelClient::new(
+        config.doc_intel_endpoint.clone(), 
+        config.doc_intel_key.clone()
+    );
+
     let queue_name = "receipt-requests"; // TODO: Make this configurable via env var
 
     println!("Rust Receipt Processor started...");
 
     loop {
-        match client.fetch_message(queue_name).await {
+        match storage_client.fetch_message(queue_name).await {
             Ok(Some(msg)) => {
                 println!("Received message: {}", msg.id);
 
                 println!("Analyzing receipt...");
-                if let Err(e) = process_workflow(&client, msg).await {
-                    eprintln!("Failed to process message: {:?}", e);
+                if let Err(e) = process_workflow(&storage_client, &ocr_client, msg).await {
+                    eprintln!("Workflow error: {:?}", e);
                 }
             }
             Ok(None) => {
@@ -40,28 +47,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn process_workflow(client: &AzureClient, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
+async fn process_workflow(storage: &AzureClient, ocr: &DocIntelClient, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
     // TODO: Add more logic to determine blob name
     let blob_name = &msg.body;
+    let image_bytes = storage.download_blob("receipts", blob_name).await?;
 
     // Download the blob
     println!("Downloading blob: {}", blob_name);
-    let blob_data = client.download_blob("receipts", blob_name).await?;
+    let blob_data = storage.download_blob("receipts", blob_name).await?;
     println!("Downloaded {} bytes", blob_data.len());
 
-    // TODO: Add OCR processing logic
-    println!("Simulating OCR processing for {}...", blob_name);
+    // Process with OCR
+    println!("Sending {} to Azure Document Intelligence...", blob_name);
+    let ocr_result = ocr.process_receipt(image_bytes).await?;
     
+    println!("OCR Result: Vendor: {:?}, Amount: {:?}, Confidence: {:.2}", 
+        ocr_result.vendor, ocr_result.amount, ocr_result.confidence_score);
+
     // Update Metadata
-    let mut metadata = HashMap::new();
+    let mut metadata = std::collections::HashMap::new();
     metadata.insert("ProcessingStatus".to_string(), "Completed".to_string());
-    metadata.insert("ProcessedAt".to_string(), "2024-05-20T12:00:00Z".to_string()); // Placeholder timestamp
+    metadata.insert("Confidence".to_string(), format!("{:.2}", ocr_result.confidence_score));
+    metadata.insert("ProcessedAt".to_string(), chrono::Utc::now().to_rfc3339());
+
+    if let Some(vendor) = ocr_result.vendor {
+        metadata.insert("ProviderName".to_string(), vendor);
+    }
+    if let Some(amount) = ocr_result.amount {
+        metadata.insert("Amount".to_string(), format!("{:.2}", amount));
+    }
+    if let Some(date) = ocr_result.date {
+        metadata.insert("ServiceDate".to_string(), date);
+    }
     
-    client.update_metadata("receipts", blob_name, metadata).await?;
+    storage.update_metadata("receipts", blob_name, metadata).await?;
     println!("Metadata updated for {}", blob_name);
 
     // Delete from Queue
-    client.delete_message("receipt-requests", &msg.id, &msg.pop_receipt).await?;
+    storage.delete_message("receipt-requests", &msg.id, &msg.pop_receipt).await?;
     println!("Message {} deleted successfully.", msg.id);
 
     Ok(())

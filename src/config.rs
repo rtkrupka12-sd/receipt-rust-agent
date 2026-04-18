@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AzureConfig {
     pub storage_connection_string: String,
     pub doc_intel_endpoint: String,
