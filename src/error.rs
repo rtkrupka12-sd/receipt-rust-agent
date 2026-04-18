@@ -8,7 +8,13 @@ pub enum ProcessorError {
     #[error("Missing or invalid configuration: {0}")]
     ConfigError(#[from] std::env::VarError),
 
-    /// Manual Errors
+    #[error("Storage error: {0}")]
+    StorageError(String),
+
+    #[error("Queue error: {0}")]
+    QueueError(String),
+
+    // Manual Errors
     #[error("Initialization error: {0}")]
     InitError(String),
 }
