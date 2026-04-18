@@ -3,10 +3,14 @@ mod config;
 mod processor;
 
 use config::AzureConfig;
-use processor::azure::{AzureClient, QueueManager};
+use processor::AzureClient;
+use processor::azure_queue::{QueueManager, QueueMessage};
+use processor::azure_container::BlobManager;
+use std::collections::HashMap;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load configuration and initialize client
     let config = AzureConfig::from_env()?;
     let client = AzureClient::new(config);
     let queue_name = "receipt-requests"; // TODO: Make this configurable via env var
@@ -17,14 +21,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match client.fetch_message(queue_name).await {
             Ok(Some(msg)) => {
                 println!("Received message: {}", msg.id);
-                
-                // TODO: Add actual receipt processing logic here
-                println!("Analyzing receipt: {}", msg.body);
 
-                // Delete message if processing is successful or after some number of retries
-                match client.delete_message(queue_name, &msg.id, &msg.pop_receipt).await {
-                    Ok(_) => println!("Message deleted successfully."),
-                    Err(e) => eprintln!("Message deletion failed for {}: {}", msg.id, e),
+                println!("Analyzing receipt...");
+                if let Err(e) = process_workflow(&client, msg).await {
+                    eprintln!("Failed to process message: {:?}", e);
                 }
             }
             Ok(None) => {
@@ -38,4 +38,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+}
+
+async fn process_workflow(client: &AzureClient, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
+    // TODO: Add more logic to determine blob name
+    let blob_name = &msg.body;
+
+    // Download the blob
+    println!("Downloading blob: {}", blob_name);
+    let blob_data = client.download_blob("receipts", blob_name).await?;
+    println!("Downloaded {} bytes", blob_data.len());
+
+    // TODO: Add OCR processing logic
+    println!("Simulating OCR processing for {}...", blob_name);
+    
+    // Update Metadata
+    let mut metadata = HashMap::new();
+    metadata.insert("ProcessingStatus".to_string(), "Completed".to_string());
+    metadata.insert("ProcessedAt".to_string(), "2024-05-20T12:00:00Z".to_string()); // Placeholder timestamp
+    
+    client.update_metadata("receipts", blob_name, metadata).await?;
+    println!("Metadata updated for {}", blob_name);
+
+    // Delete from Queue
+    client.delete_message("receipt-requests", &msg.id, &msg.pop_receipt).await?;
+    println!("Message {} deleted successfully.", msg.id);
+
+    Ok(())
 }

@@ -1,9 +1,8 @@
 use mockall::automock;
 use async_trait::async_trait;
-use crate::config::AzureConfig;
 use crate::error::ProcessorError;
+use super::AzureClient;
 use azure_storage_queues::prelude::*;
-use azure_storage::StorageCredentials;
 
 #[automock] // macro from mockall to generate a mock implementation of the QueueManager trait for testing purposes
 #[async_trait] // macro from async_trait to allow async functions in traits
@@ -15,41 +14,11 @@ pub trait QueueManager {
     async fn delete_message(&self, queue_name: &str, message_id: &str, pop_receipt: &str) -> Result<(), ProcessorError>;
 }
 
-pub struct AzureClient {
-    config: AzureConfig,
-}
-
-impl AzureClient {
-    pub fn new(config: AzureConfig) -> Self {
-        Self { config }
-    }
-
-    // TODO: Move to main.rs outside of process loop so that we're not creating a new client for every message fetch and delete.
-    // Creates a QueueServiceClient from the connection string
-    fn create_queue_service(&self) -> Result<QueueServiceClient, ProcessorError> {
-        // Manual connection string parser for 0.21
-        let conn_str: &str = &self.config.storage_connection_string;
-        let parts: std::collections::HashMap<&str, &str> = conn_str
-            .split(';')
-            .filter_map(|s| s.split_once('='))
-            .collect();
-
-        let account: &str = parts.get("AccountName")
-            .ok_or_else(|| ProcessorError::StorageError("Missing AccountName".into()))?;
-        let key: &str = parts.get("AccountKey")
-            .ok_or_else(|| ProcessorError::StorageError("Missing AccountKey".into()))?;
-
-        let storage_credentials: StorageCredentials = StorageCredentials::access_key(account.to_string(), key.to_string());
-        let queue_service: QueueServiceClient = QueueServiceClient::new(account.to_string(), storage_credentials);
-
-        Ok(queue_service)
-    }
-}
-
 #[async_trait]
 impl QueueManager for AzureClient {
     async fn fetch_message(&self, queue_name: &str) -> Result<Option<QueueMessage>, ProcessorError> {
-        let queue_service: QueueServiceClient = self.create_queue_service()?;
+        let (account, credentials) = self.get_credentials()?;
+        let queue_service: QueueServiceClient = QueueServiceClient::new(account, credentials);
         let queue_client: QueueClient = queue_service.queue_client(queue_name);
 
         // Try to get a message
@@ -72,7 +41,8 @@ impl QueueManager for AzureClient {
     }
 
     async fn delete_message(&self, queue_name: &str, message_id: &str, pop_receipt: &str) -> Result<(), ProcessorError> {
-        let queue_service: QueueServiceClient = self.create_queue_service()?;
+        let (account, credentials) = self.get_credentials()?;
+        let queue_service: QueueServiceClient = QueueServiceClient::new(account, credentials);
         let queue_client: QueueClient = queue_service.queue_client(queue_name);
 
         let pop_receipt_obj: PopReceipt = PopReceipt::new(message_id.to_string(), pop_receipt.to_string());
@@ -97,6 +67,7 @@ pub struct QueueMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AzureConfig;
 
     fn create_test_config() -> AzureConfig {
         AzureConfig {
