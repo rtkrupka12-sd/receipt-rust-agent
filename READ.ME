@@ -1,0 +1,64 @@
+HSA Receipt Processor (Rust Worker)
+A high-performance, asynchronous background worker built in Rust to handle medical receipt OCR processing. This worker acts as the "Core" processing engine for the ActualBridge HSA management ecosystem.
+
+🏗 Architecture
+This project follows a Hybrid Cloud pattern, leveraging the strengths of two distinct ecosystems:
+
+Edge (C# / .NET): Handles user authentication, API management, and the web frontend.
+
+Core (Rust): A stateless, high-concurrency worker that manages the resource-intensive OCR pipeline and data integrity.
+
+The "Durable" Processing Loop
+The worker implements an explicit Asynchronous HTTP Polling pattern to interact with Azure AI Services:
+
+Ingest: Polls an Azure Storage Queue for new receipt processing requests.
+
+Download: Retrieves the raw receipt bytes from Azure Blob Storage into memory.
+
+Analyze: Submits the data to Azure Document Intelligence (Prebuilt-Receipt Model).
+
+Poll: Executes a non-blocking retry loop to monitor AI analysis status (mimicking a Durable Function orchestration).
+
+Enrich: Updates the original Blob metadata with extracted Vendor, Amount, Service Date, and Confidence scores.
+
+Finalize: Deletes the queue message upon successful completion.
+
+🚀 Key Features
+Memory Efficient: Processes image bytes entirely in-memory to minimize I/O overhead.
+
+Type-Safe OCR: Uses a custom OcrEngine trait, allowing for seamless swapping between Azure AI and local engines (like Tesseract).
+
+Resilient Metadata: Aligns with C# MedicalReceipt schemas, ensuring the Blob Storage remains a searchable "Source of Truth."
+
+Fully Mocked Suite: Unit tests utilize mockito to simulate complex Azure AI lifecycles without incurring cloud costs.
+
+🛠 Tech Stack
+Language: Rust (Latest Stable)
+
+Async Runtime: tokio
+
+Cloud SDKs: azure_storage_blobs, azure_storage_queues
+
+HTTP Client: reqwest (REST API integration)
+
+Serialization: serde, serde_json
+
+🚦 Getting Started
+Prerequisites
+Rust toolchain installed.
+
+An Azure Storage Account and Document Intelligence resource.
+
+Environment Variables
+Create a .env file or export the following:
+
+Bash
+STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
+DOC_INTEL_ENDPOINT="https://your-resource.cognitiveservices.azure.com/"
+DOC_INTEL_KEY="your-api-key"
+
+Running the Worker
+cargo run --release
+
+Running Tests
+cargo test
