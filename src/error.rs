@@ -20,7 +20,11 @@ pub enum ProcessorError {
     #[error("Queue error: {0}")]
     QueueError(String),
 
+    // OCR Errors
+    #[error("OCR error: {0}")]
+    OcrError(String),
+
     // Manual Errors
     #[error("Initialization error: {0}")]
-    InitError(String),
+    InitError(String)
 }
