@@ -7,18 +7,16 @@ use processor::AzureClient;
 use processor::azure_queue::{QueueManager, QueueMessage};
 use processor::azure_container::BlobManager;
 use processor::ocr::OcrEngine;
+use processor::ocr::tesseract::TesseractClient;
 use processor::ocr::doc_intel::DocIntelClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let config = AzureConfig::from_env()?;
-
     let storage_client = AzureClient::new(config.clone());
-    let ocr_client = DocIntelClient::new(
-        config.doc_intel_endpoint.clone(), 
-        config.doc_intel_key.clone()
-    );
+
+    let use_local_ocr = true;
 
     let queue_name = "receipt-requests"; // TODO: Make this configurable via env var
 
@@ -29,9 +27,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(Some(msg)) => {
                 println!("Received message: {}", msg.id);
 
-                println!("Analyzing receipt...");
-                if let Err(e) = process_workflow(&storage_client, &ocr_client, msg).await {
-                    eprintln!("Workflow error: {:?}", e);
+                // Strategy Selection
+                if use_local_ocr {
+                    let local_ocr = TesseractClient::new();
+                    let _ = process_workflow(&storage_client, &local_ocr, msg).await;
+                } else {
+                    let cloud_ocr = DocIntelClient::new(
+                        config.doc_intel_endpoint.clone(), 
+                        config.doc_intel_key.clone()
+                    );
+                    let _ = process_workflow(&storage_client, &cloud_ocr, msg).await;
                 }
             }
             Ok(None) => {
@@ -47,19 +52,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn process_workflow(storage: &AzureClient, ocr: &DocIntelClient, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
+async fn process_workflow(storage: &AzureClient, ocr: &impl OcrEngine, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
     // TODO: Add more logic to determine blob name
     let blob_name = &msg.body;
-    let image_bytes = storage.download_blob("receipts", blob_name).await?;
 
     // Download the blob
     println!("Downloading blob: {}", blob_name);
-    let blob_data = storage.download_blob("receipts", blob_name).await?;
+    let blob_data: Vec<u8> = storage.download_blob("receipts", blob_name).await?;
     println!("Downloaded {} bytes", blob_data.len());
 
     // Process with OCR
-    println!("Sending {} to Azure Document Intelligence...", blob_name);
-    let ocr_result = ocr.process_receipt(image_bytes).await?;
+    println!("Processing with OCR engine...");
+    let ocr_result: processor::ocr::ReceiptResult = ocr.process_receipt(blob_data).await?;
     
     println!("OCR Result: Vendor: {:?}, Amount: {:?}, Confidence: {:.2}", 
         ocr_result.vendor, ocr_result.amount, ocr_result.confidence_score);
