@@ -6,6 +6,7 @@ use config::AzureConfig;
 use processor::AzureClient;
 use processor::azure_queue::{QueueManager, QueueMessage};
 use processor::azure_container::BlobManager;
+use processor::ocr::ReceiptResult;
 use processor::ocr::OcrEngine;
 use processor::ocr::tesseract::TesseractClient;
 use processor::ocr::doc_intel::DocIntelClient;
@@ -21,27 +22,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("OPENAI_API_KEY environment variable must be set");
     let auditor_client = OpenAiAuditor::new(openai_key);
 
-    let use_local_ocr = true;
-
-    let queue_name = "receipt-requests"; // TODO: Make this configurable via env var
+    let queue_name = std::env::var("AZURE_QUEUE_NAME")
+        .unwrap_or_else(|_| "receipt-requests".to_string());
 
     println!("Rust Receipt Processor started...");
 
     loop {
-        match storage_client.fetch_message(queue_name).await {
+        match storage_client.fetch_message(&queue_name).await {
             Ok(Some(msg)) => {
                 println!("Received message: {}", msg.id);
 
-                // Strategy Selection
-                if use_local_ocr {
-                    let local_ocr = TesseractClient::new();
-                    let _ = process_workflow(&storage_client, &local_ocr, &auditor_client, msg).await;
-                } else {
-                    let cloud_ocr = DocIntelClient::new(
-                        config.doc_intel_endpoint.clone(), 
-                        config.doc_intel_key.clone()
-                    );
-                    let _ = process_workflow(&storage_client, &cloud_ocr, &auditor_client, msg).await;
+                match execute_tiered_workflow(&storage_client, &auditor_client, &config, msg.clone()).await {
+                    Ok(_) => {
+                        // Clear message from queue if processing succeeded
+                        let _ = storage_client.delete_message(&queue_name, &msg.id, &msg.pop_receipt).await;
+                    }
+                    Err(e) => {
+                        eprintln!("Workflow processing failed for message {}: {:?}", msg.id, e);
+                        // Message will be visible again in the queue after visibility timeout expires
+                    }
                 }
             }
             Ok(None) => {
@@ -57,79 +56,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn process_workflow<O: OcrEngine, A: AuditEngine>(storage: &AzureClient, ocr: &O, auditor: &A, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
-    // TODO: Add more logic to determine blob name
-    let blob_name = &msg.body;
+async fn execute_tiered_workflow<A: AuditEngine>(storage: &AzureClient, auditor: &A, config: &AzureConfig, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
+    let blob_name: String = parse_blob_name(&msg.body)?;
+    let container_name = "receipts";
 
     // Download the blob
     println!("Downloading blob: {}", blob_name);
-    let blob_data: Vec<u8> = storage.download_blob("receipts", blob_name).await?;
-    println!("Downloaded {} bytes", blob_data.len());
+    let image_bytes: Vec<u8> = storage.download_blob(container_name, &blob_name).await?;
+    println!("Downloaded {} bytes", image_bytes.len());
 
-    // 1. OCR Processing
-    let engine_type = if std::any::type_name::<O>().contains("Tesseract") { "Local Tesseract" } else { "Azure Doc Intel" };
-    println!("Processing with {}...", engine_type);
-    
-    let mut ocr_result = ocr.process_receipt(blob_data).await?;
+    // --- TIER 1: Local Tesseract OCR (with Image Pre-processing) ---
+    println!("Executing Tier 1: Local Tesseract Parsing...");
+    let local_ocr = TesseractClient::new();
+    let mut final_result: ReceiptResult = local_ocr.process_receipt(image_bytes.clone()).await?;
 
-    // 2. Auditing and Enrichment
-    if ocr_result.confidence_score < 0.70 {
-        println!(
-            "Low confidence score ({:.2}). Triggering AI Auditor via Semantic Routing...", 
-            ocr_result.confidence_score
-        );
+    // --- TIER 2: OpenAI AI Audit Text Repair Gate ---
+    if final_result.confidence_score < 0.70 {
+        println!("Tier 1 confidence low ({:.2}). Escalating to Tier 2: OpenAI Semantic Audit...", final_result.confidence_score);
         
-        // We'll pass the raw text output to the auditor. 
-        // Note: Make sure your TesseractClient returns the raw engine text inside your framework, 
-        // or synthesize a clean text block from the values for the prompt string context.
-        let contextual_raw_text = format!(
+        let context_text = format!(
             "Line elements found: Vendor Guess: {:?}, Price Guess: {:?}", 
-            ocr_result.vendor, ocr_result.amount
+            final_result.vendor, final_result.amount
         );
 
-        match auditor.enrich_result(&contextual_raw_text, ocr_result.clone()).await {
-            Ok(enriched_result) => {
-                ocr_result = enriched_result;
-                println!(
-                    "AI Audit Complete. New Confidence: {:.2}, Verified: {}, Category: {:?}",
-                    ocr_result.confidence_score, ocr_result.is_verified, ocr_result.category
-                );
+        match auditor.enrich_result(&context_text, final_result.clone()).await {
+            Ok(enriched) => {
+                final_result = enriched;
+                println!("Tier 2 Audit Complete. Updated Confidence Score: {:.2}", final_result.confidence_score);
             }
             Err(e) => {
-                eprintln!("AI Auditor failed to enrich text data: {:?}", e);
-                // Non-fatal error; fall back to storing raw unverified OCR results
+                eprintln!("Tier 2 AI Auditor encountered an operational error: {:?}", e);
+                // Non-fatal, preserve current Tesseract results for the next threshold check
             }
         }
-    } else {
-        println!("High confidence result achieved directly via OCR engine.");
-        ocr_result.is_verified = true;
     }
 
-    // 3. Metadata Update
+    // --- TIER 3: Azure Document Intelligence Fallback ---
+    if final_result.confidence_score < 0.70 || !final_result.is_verified {
+        println!("Tier 2 validation failed or remained low confidence ({:.2}). Escalating to Tier 3: Azure Document Intelligence...", final_result.confidence_score);
+        
+        let cloud_ocr = DocIntelClient::new(
+            config.doc_intel_endpoint.clone(), 
+            config.doc_intel_key.clone()
+        );
+        
+        match cloud_ocr.process_receipt(image_bytes).await {
+            Ok(cloud_result) => {
+                final_result = cloud_result;
+                // Cloud OCR results are structurally verified by default assuming successful Azure API parsing
+                final_result.is_verified = true; 
+                println!("Tier 3 Extraction Successful. Final Vendor: {:?}", final_result.vendor);
+            }
+            Err(e) => {
+                return Err(crate::error::ProcessorError::StorageError(format!(
+                    "Critical Failure: All processing tiers exhausted. Cloud OCR failed: {}", e
+                )));
+            }
+        }
+    }
+
+    // Image Metadata Update
     let mut metadata = std::collections::HashMap::new();
     metadata.insert("ProcessingStatus".to_string(), "Completed".to_string());
 
-    let normalized_score = (ocr_result.confidence_score * 100.0).round() / 100.0;
+    let normalized_score = (final_result.confidence_score * 100.0).round() / 100.0;
     metadata.insert("Confidence".to_string(), normalized_score.to_string());
-    metadata.insert("IsVerified".to_string(), ocr_result.is_verified.to_string());
+    metadata.insert("IsVerified".to_string(), final_result.is_verified.to_string());
     metadata.insert("ProcessedAt".to_string(), chrono::Utc::now().to_rfc3339());
 
-    if let Some(vendor) = ocr_result.vendor {
-        metadata.insert("ProviderName".to_string(), vendor);
-    }
-    if let Some(amount) = ocr_result.amount {
-        metadata.insert("Amount".to_string(), format!("{:.2}", amount));
-    }
-    if let Some(date) = ocr_result.date {
-        metadata.insert("ServiceDate".to_string(), date);
-    }
+    if let Some(vendor) = final_result.vendor {metadata.insert("ProviderName".to_string(), vendor);}
+    if let Some(amount) = final_result.amount {metadata.insert("Amount".to_string(), format!("{:.2}", amount));}
+    if let Some(date) = final_result.date {metadata.insert("ServiceDate".to_string(), date);}
     
-    storage.update_metadata("receipts", blob_name, metadata).await?;
+    storage.update_metadata(container_name, &blob_name, metadata).await?;
     println!("Metadata updated for {}", blob_name);
-
-    // Delete from Queue
-    storage.delete_message("receipt-requests", &msg.id, &msg.pop_receipt).await?;
-    println!("Message {} deleted successfully.", msg.id);
 
     Ok(())
 }
+
+// Handles multiple message formats from queue
+fn parse_blob_name(message_body: &str) -> Result<String, crate::error::ProcessorError> {
+    let trimmed = message_body.trim();
+    if trimmed.is_empty() {
+        return Err(crate::error::ProcessorError::StorageError("Queue message body is empty".into()));
+    }
+    
+    // Handles cases in which message body contains wrapper JSON or file extension quotes
+    let clean_name = trimmed
+        .trim_matches('"')
+        .trim_start_matches("{ \"blob_name\": \"")
+        .trim_end_matches("\" }")
+        .to_string();
+
+    Ok(clean_name)
+    }

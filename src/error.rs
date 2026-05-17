@@ -27,8 +27,4 @@ pub enum ProcessorError {
     // Audit Errors
     #[error("Audit error: {0}")]
     AiAuditError(String),
-
-    // Manual Errors
-    #[error("Initialization error: {0}")]
-    InitError(String)
 }
