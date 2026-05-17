@@ -24,6 +24,10 @@ pub enum ProcessorError {
     #[error("OCR error: {0}")]
     OcrError(String),
 
+    // Audit Errors
+    #[error("Audit error: {0}")]
+    AiAuditError(String),
+
     // Manual Errors
     #[error("Initialization error: {0}")]
     InitError(String)
