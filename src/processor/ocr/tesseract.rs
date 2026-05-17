@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use crate::processor::ocr::{OcrEngine, ReceiptResult};
 use crate::error::ProcessorError;
 use regex::Regex;
+use crate::processor::ocr::pre_processor::ImagePreProcessor;
 
 pub struct TesseractClient;
 
@@ -36,7 +37,10 @@ impl TesseractClient {
 
 #[async_trait] // macro from async_trait to allow async functions in traits
 impl OcrEngine for TesseractClient {
-    async fn process_receipt(&self, image_data: Vec<u8>) -> Result<ReceiptResult, ProcessorError> {
+    async fn process_receipt(&self, image_bytes: Vec<u8>) -> Result<ReceiptResult, ProcessorError> {
+        // Pre-process the image to optimize for OCR accuracy (e.g., convert to grayscale, increase contrast)
+        let optimized_bytes = ImagePreProcessor::optimize_for_ocr(&image_bytes)?;
+
         // Spawn blocking will run the Tesseract OCR in a separate thread so it doesn't block the async runtime, since Tesseract is CPU-bound and not async-friendly.
         // Step 1: Perform OCR using Tesseract on the image data
         let raw_text: String = tokio::task::spawn_blocking(move || -> Result<String, ProcessorError> {
@@ -45,7 +49,7 @@ impl OcrEngine for TesseractClient {
                 .map_err(|e| ProcessorError::OcrError(format!("Failed to init Tesseract: {}", e)))?;
 
             // 2. Load the image from memory
-            let pix = leptess::leptonica::pix_read_mem(&image_data)
+            let pix = leptess::leptonica::pix_read_mem(&optimized_bytes)
                 .map_err(|e| ProcessorError::OcrError(format!("Leptonica error: {}", e)))?;
 
             // 3. Perform the OCR
