@@ -57,7 +57,7 @@ impl QueueManager for AzureClient {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct QueueMessage {
     pub id: String,
     pub pop_receipt: String, // Fetching a message just hides it during a visibility timeout, so we need the pop receipt to delete it after processing
