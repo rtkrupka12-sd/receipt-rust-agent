@@ -2,6 +2,7 @@
 pub mod azure_queue;
 pub mod azure_container;
 pub mod ocr;
+pub mod auditor;
 
 use crate::config::AzureConfig;
 use crate::error::ProcessorError;

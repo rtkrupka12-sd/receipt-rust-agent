@@ -77,7 +77,9 @@ impl OcrEngine for TesseractClient {
             vendor,
             amount,
             date: None, // TODO: Add date parsing logic
+            category: None, // TODO: Add category parsing logic
             confidence_score: score,
+            is_verified: false // AI Auditor verification 
         })
     }
 }

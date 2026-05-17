@@ -10,9 +10,12 @@ pub trait OcrEngine {
     async fn process_receipt(&self, image_bytes: Vec<u8>) -> Result<ReceiptResult, ProcessorError>;
 }
 
+#[derive(Debug, Clone)]
 pub struct ReceiptResult {
     pub vendor: Option<String>,
     pub amount: Option<f64>,
     pub date: Option<String>,
-    pub confidence_score: f32, // Determines if document intelligence backup is needed after OCR processing
+    pub category: Option<String>,
+    pub confidence_score: f32,
+    pub is_verified: bool,
 }
