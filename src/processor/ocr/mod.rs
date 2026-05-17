@@ -1,5 +1,6 @@
 pub mod doc_intel;
 pub mod tesseract;
+pub mod pre_processor;
 
 use async_trait::async_trait;
 use crate::error::ProcessorError;
