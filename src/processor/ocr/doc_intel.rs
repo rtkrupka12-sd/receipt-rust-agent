@@ -76,7 +76,9 @@ fn parse_di_result(json: serde_json::Value) -> Result<ReceiptResult, ProcessorEr
         vendor: fields["MerchantName"]["valueString"].as_str().map(|s: &str| s.to_string()),
         amount: fields["Total"]["valueCurrency"]["amount"].as_f64(),
         date: fields["TransactionDate"]["valueDate"].as_str().map(|s: &str| s.to_string()),
+        category: None, // TODO: Add category parsing logic
         confidence_score: json["analyzeResult"]["documents"][0]["confidence"].as_f64().unwrap_or(0.0) as f32,
+        is_verified: false
     })
 }
 
