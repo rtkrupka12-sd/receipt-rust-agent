@@ -22,3 +22,4 @@ futures = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"
 leptess = "0.14"
+async-openai = "0.23.0"
