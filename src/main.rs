@@ -22,20 +22,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("OPENAI_API_KEY environment variable must be set");
     let auditor_client = OpenAiAuditor::new(openai_key);
 
-    let queue_name = std::env::var("AZURE_QUEUE_NAME")
-        .unwrap_or_else(|_| "receipt-requests".to_string());
-
     println!("Rust Receipt Processor started...");
 
     loop {
-        match storage_client.fetch_message(&queue_name).await {
+        match storage_client.fetch_message(&config.queue_name).await {
             Ok(Some(msg)) => {
                 println!("Received message: {}", msg.id);
 
-                match execute_tiered_workflow(&storage_client, &auditor_client, &config, msg.clone()).await {
+                match execute_tiered_workflow(&storage_client, &auditor_client, &config, &config.container_name, msg.clone()).await {
                     Ok(_) => {
                         // Clear message from queue if processing succeeded
-                        let _ = storage_client.delete_message(&queue_name, &msg.id, &msg.pop_receipt).await;
+                        let _ = storage_client.delete_message(&config.queue_name, &msg.id, &msg.pop_receipt).await;
                     }
                     Err(e) => {
                         eprintln!("Workflow processing failed for message {}: {:?}", msg.id, e);
@@ -56,9 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn execute_tiered_workflow<A: AuditEngine>(storage: &AzureClient, auditor: &A, config: &AzureConfig, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
+async fn execute_tiered_workflow<A: AuditEngine>(storage: &AzureClient, auditor: &A, config: &AzureConfig, container_name: &str, msg: QueueMessage) -> Result<(), crate::error::ProcessorError> {
     let blob_name: String = parse_blob_name(&msg.body)?;
-    let container_name = "receipts";
 
     // Download the blob
     println!("Downloading blob: {}", blob_name);
@@ -70,7 +66,7 @@ async fn execute_tiered_workflow<A: AuditEngine>(storage: &AzureClient, auditor:
     let local_ocr = TesseractClient::new();
     let mut final_result: ReceiptResult = local_ocr.process_receipt(image_bytes.clone()).await?;
 
-    // --- TIER 2: OpenAI AI Audit Text Repair Gate ---
+    // --- TIER 2: OpenAI AI Text Audit ---
     if final_result.confidence_score < 0.70 {
         println!("Tier 1 confidence low ({:.2}). Escalating to Tier 2: OpenAI Semantic Audit...", final_result.confidence_score);
         
