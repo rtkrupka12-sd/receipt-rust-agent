@@ -8,20 +8,39 @@ Edge (C# / .NET): Handles user authentication, API management, and the web front
 
 Core (Rust): A stateless, high-concurrency worker that manages the resource-intensive OCR pipeline and data integrity.
 
-The "Durable" Processing Loop
-The worker implements an explicit Asynchronous HTTP Polling pattern to interact with Azure AI Services:
+🧠 The 3-Tiered Intelligent Cascading Pipeline
+Rather than relying solely on expensive cloud APIs, the worker implements a resilient, cost-optimized Semantic Routing / Cascading Fallback pattern to evaluate and repair receipt data:
 
-Ingest: Polls an Azure Storage Queue for new receipt processing requests.
+[ Azure Queue Request ]
+         │
+         ▼
+ ┌───────────────┐
+ │    TIER 1     │ ──(Confidence ≥ 70%)──► [ Success: Persist Metadata ]
+ │ Local Text    │
+ └───────────────┘
+         │ (Low Confidence)
+         ▼
+ ┌───────────────┐
+ │    TIER 2     │ ──(Confidence ≥ 70%)──► [ Success: Persist Metadata ]
+ │ OpenAI Repair │
+ └───────────────┘
+         │ (Validation Fails / Low Confidence)
+         ▼
+ ┌───────────────┐
+ │    TIER 3     │ ──────────────────────► [ Success: Persist Metadata ]
+ │  Azure Cloud  │
+ └───────────────┘
 
-Download: Retrieves the raw receipt bytes from Azure Blob Storage into memory.
+ Tier 1: Local Image Pre-Processing & Tesseract (Free/Edge)
+The worker applies grayscale conversion, resolution downscaling (to a max 2000px boundary), and aggressive contrast adjustments (Luma8 binarization) to incoming receipt images. This strips away shadows, table backgrounds, and color noise, allowing local Tesseract OCR to extract maximum fidelity at zero compute cost.
 
-Analyze: Submits the data to Azure Document Intelligence (Prebuilt-Receipt Model).
+Tier 2: OpenAI Semantic Audit & Data Repair (Low Cost)
+If local OCR yields a confidence score below 0.70, the raw text is forwarded to gpt-4o-mini. Driven by strict schema prompts, the AI fixes broken text formatting, validates fields, and infers financial Expense Categories (e.g., Meals, Software, Medical Utilities).
 
-Poll: Executes a non-blocking retry loop to monitor AI analysis status (mimicking a Durable Function orchestration).
+Tier 3: Azure Document Intelligence Fallback (Premium Cloud)
+If the LLM flags the receipt as structurally invalid or confidence remains below the threshold, the system escalates the raw image to the premium Azure Document Intelligence (Prebuilt-Receipt Model) as the ultimate source of truth.
 
-Enrich: Updates the original Blob metadata with extracted Vendor, Amount, Service Date, and Confidence scores.
-
-Finalize: Deletes the queue message upon successful completion.
+Fault-Tolerant Queue Bounds: If a total provider dropout occurs and all three tiers exhaustively fail, the error is safely swallowed and logged. The message is intentionally preserved on the Azure Queue, allowing it to become visible again for retry without data loss.
 
 🚀 Key Features
 Memory Efficient: Processes image bytes entirely in-memory to minimize I/O overhead.
@@ -37,25 +56,36 @@ Language: Rust (Latest Stable)
 
 Async Runtime: tokio
 
-Cloud SDKs: azure_storage_blobs, azure_storage_queues
+Image Processing: image (v0.25)
 
-HTTP Client: reqwest (REST API integration)
+Cloud SDKs: azure_storage_blobs, azure_storage_queues, async-openai
 
 Serialization: serde, serde_json
 
 🚦 Getting Started
-Prerequisites
-Rust toolchain installed.
+📦 Development Container Setup
+The easiest way to work on this repository is using VS Code and Docker via the Dev Containers extension. The included container environment comes pre-configured with the required native C libraries (tesseract, leptonica, pkg-config, and LLVM compilers) so you can hit the ground running without local installation friction.
 
-An Azure Storage Account and Document Intelligence resource.
+Open the project folder in VS Code.
+
+Click "Reopen in Container" when prompted (or open the Command Palette Ctrl+Shift+P and select Dev Containers: Reopen in Container).
+
+The environment will assemble automatically, and your workspace will be fully ready for compilation.
 
 Environment Variables
-Create a .env file or export the following:
+Copy .env.example to a new file named .env and fill in your target infrastructure keys:
 
-Bash
-STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
-DOC_INTEL_ENDPOINT="https://your-resource.cognitiveservices.azure.com/"
-DOC_INTEL_KEY="your-api-key"
+# Azure Storage Infrastructure
+AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=..."
+AZURE_QUEUE_NAME="receipt-requests"
+AZURE_CONTAINER_NAME="receipts"
+
+# Azure Document Intelligence (OCR Fallback)
+AZURE_DOC_INTEL_ENDPOINT="https://your-resource.cognitiveservices.azure.com/"
+AZURE_DOC_INTEL_KEY="your-api-key"
+
+# OpenAI Auditor Gateway
+OPENAI_API_KEY="your-openai-api-key"
 
 Running the Worker
 cargo run --release
