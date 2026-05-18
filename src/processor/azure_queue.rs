@@ -74,6 +74,8 @@ mod tests {
             storage_connection_string: "DefaultEndpointsProtocol=https;AccountName=testaccount;AccountKey=dGVzdGtleQ==;EndpointSuffix=core.windows.net".to_string(),
             doc_intel_endpoint: "https://test.cognitiveservices.azure.com/".to_string(),
             doc_intel_key: "test_key".to_string(),
+            queue_name: "receipt-requests".to_string(),
+            container_name: "receipts".to_string(),
         }
     }
 
