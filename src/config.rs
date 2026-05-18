@@ -3,6 +3,8 @@ pub struct AzureConfig {
     pub storage_connection_string: String,
     pub doc_intel_endpoint: String,
     pub doc_intel_key: String,
+    pub queue_name: String,
+    pub container_name: String,
 }
 
 impl AzureConfig {
@@ -16,6 +18,8 @@ impl AzureConfig {
             storage_connection_string: std::env::var("AZURE_STORAGE_CONNECTION_STRING")?,
             doc_intel_endpoint: std::env::var("AZURE_DOC_INTEL_ENDPOINT")?,
             doc_intel_key: std::env::var("AZURE_DOC_INTEL_KEY")?,
+            queue_name: std::env::var("AZURE_QUEUE_NAME").unwrap_or_else(|_| "receipt-requests".to_string()),
+            container_name: std::env::var("AZURE_CONTAINER_NAME").unwrap_or_else(|_| "receipts".to_string()),
         })
     }
 }
@@ -41,6 +45,8 @@ mod tests {
             std::env::set_var("AZURE_STORAGE_CONNECTION_STRING", "test_connection_string");
             std::env::set_var("AZURE_DOC_INTEL_ENDPOINT", "https://test.endpoint.com");
             std::env::set_var("AZURE_DOC_INTEL_KEY", "test_key");
+            std::env::set_var("AZURE_QUEUE_NAME", "receipt-requests");
+            std::env::set_var("AZURE_CONTAINER_NAME", "receipts");
         }
 
         // Call from_env and verify it returns a valid AzureConfig
@@ -51,12 +57,16 @@ mod tests {
         assert_eq!(config.storage_connection_string, "test_connection_string");
         assert_eq!(config.doc_intel_endpoint, "https://test.endpoint.com");
         assert_eq!(config.doc_intel_key, "test_key");
+        assert_eq!(config.queue_name, "receipt-requests");
+        assert_eq!(config.container_name, "receipts");
 
         // Clean up
         unsafe {
             std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING");
             std::env::remove_var("AZURE_DOC_INTEL_ENDPOINT");
             std::env::remove_var("AZURE_DOC_INTEL_KEY");
+            std::env::remove_var("AZURE_QUEUE_NAME");
+            std::env::remove_var("AZURE_CONTAINER_NAME");
         }
     }
 
@@ -69,6 +79,8 @@ mod tests {
             std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING"); // not set
             std::env::set_var("AZURE_DOC_INTEL_ENDPOINT", "https://test.endpoint.com");
             std::env::set_var("AZURE_DOC_INTEL_KEY", "test_key");
+            std::env::set_var("AZURE_QUEUE_NAME", "receipt-requests");
+            std::env::set_var("AZURE_CONTAINER_NAME", "receipts");
         }
 
         // Call from_env and verify it returns an error
@@ -79,6 +91,8 @@ mod tests {
         unsafe {
             std::env::remove_var("AZURE_DOC_INTEL_ENDPOINT");
             std::env::remove_var("AZURE_DOC_INTEL_KEY");
+            std::env::remove_var("AZURE_QUEUE_NAME");
+            std::env::remove_var("AZURE_CONTAINER_NAME");
         }
     }
 
@@ -90,6 +104,8 @@ mod tests {
             std::env::set_var("AZURE_STORAGE_CONNECTION_STRING", "test_connection_string");
             std::env::remove_var("AZURE_DOC_INTEL_ENDPOINT"); // not set
             std::env::set_var("AZURE_DOC_INTEL_KEY", "test_key");
+            std::env::set_var("AZURE_QUEUE_NAME", "receipt-requests");
+            std::env::set_var("AZURE_CONTAINER_NAME", "receipts");
         }
 
         let config = AzureConfig::from_env();
@@ -99,6 +115,8 @@ mod tests {
         unsafe {
             std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING");
             std::env::remove_var("AZURE_DOC_INTEL_KEY");
+            std::env::remove_var("AZURE_QUEUE_NAME");
+            std::env::remove_var("AZURE_CONTAINER_NAME");
         }
     }
 
@@ -110,6 +128,8 @@ mod tests {
             std::env::set_var("AZURE_STORAGE_CONNECTION_STRING", "test_connection_string");
             std::env::set_var("AZURE_DOC_INTEL_ENDPOINT", "https://test.endpoint.com");
             std::env::remove_var("AZURE_DOC_INTEL_KEY"); // not set
+            std::env::set_var("AZURE_QUEUE_NAME", "receipt-requests");
+            std::env::set_var("AZURE_CONTAINER_NAME", "receipts");
         }
 
         let config = AzureConfig::from_env();
@@ -119,7 +139,58 @@ mod tests {
         unsafe {
             std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING");
             std::env::remove_var("AZURE_DOC_INTEL_ENDPOINT");
+            std::env::remove_var("AZURE_QUEUE_NAME");
+            std::env::remove_var("AZURE_CONTAINER_NAME");
+        }
+    }
+
+    // Missing queue name should default to "receipt-requests"
+    #[test]
+    #[serial]
+    fn test_from_env_missing_queue_name() {
+        unsafe {
+            std::env::set_var("AZURE_STORAGE_CONNECTION_STRING", "test_connection_string");
+            std::env::set_var("AZURE_DOC_INTEL_ENDPOINT", "https://test.endpoint.com");
+            std::env::set_var("AZURE_DOC_INTEL_KEY", "test_key");
+            std::env::remove_var("AZURE_QUEUE_NAME"); // not set
+            std::env::set_var("AZURE_CONTAINER_NAME", "receipts");
+        }
+
+        let config = AzureConfig::from_env();
+        println!("test_from_env_missing_queue_name - config: {:?}", config);
+        assert!(matches!(config, Ok(cfg) if cfg.queue_name == "receipt-requests"));
+
+        unsafe {
+            std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING");
+            std::env::remove_var("AZURE_DOC_INTEL_ENDPOINT");
+            std::env::remove_var("AZURE_DOC_INTEL_KEY");
+            std::env::remove_var("AZURE_QUEUE_NAME");
+            std::env::remove_var("AZURE_CONTAINER_NAME");
+        }
+    }
+
+    // Missing container name should default to "receipts"
+    #[test]
+    #[serial]
+    fn test_from_env_missing_container_name() {
+        unsafe {
+            std::env::set_var("AZURE_STORAGE_CONNECTION_STRING", "test_connection_string");
+            std::env::set_var("AZURE_DOC_INTEL_ENDPOINT", "https://test.endpoint.com");
+            std::env::set_var("AZURE_DOC_INTEL_KEY", "test_key");
+            std::env::set_var("AZURE_QUEUE_NAME", "receipt-requests");
+            std::env::remove_var("AZURE_CONTAINER_NAME"); // not set
+        }
+
+        let config = AzureConfig::from_env();
+        println!("test_from_env_missing_container_name - config: {:?}", config);
+        assert!(matches!(config, Ok(cfg) if cfg.container_name == "receipts"));
+
+        unsafe {
+            std::env::remove_var("AZURE_STORAGE_CONNECTION_STRING");
+            std::env::remove_var("AZURE_DOC_INTEL_ENDPOINT");
+            std::env::remove_var("AZURE_DOC_INTEL_KEY");
+            std::env::remove_var("AZURE_QUEUE_NAME");
+            std::env::remove_var("AZURE_CONTAINER_NAME");
         }
     }
 }
-
